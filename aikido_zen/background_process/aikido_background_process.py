@@ -1,0 +1,117 @@
+"""
+Simply exports the aikido background process
+"""
+
+import json
+import multiprocessing.connection as con
+import signal
+import time
+import sched
+import traceback
+import sys
+import platform
+from threading import Thread
+from queue import Queue
+from aikido_zen.helpers.get_agent_session_id import set_agent_session_id
+from aikido_zen.helpers.logging import logger
+from aikido_zen.background_process.cloud_connection_manager import (
+    CloudConnectionManager,
+)
+from aikido_zen.helpers.check_env_for_blocking import check_env_for_blocking
+from aikido_zen.helpers.token import get_token_from_env
+from aikido_zen.background_process.api.http_api import ReportingApiHTTP
+from aikido_zen.helpers.urls.get_api_url import get_api_url
+from .commands import process_incoming_command
+
+EMPTY_QUEUE_INTERVAL = 5  # 5 seconds
+
+
+class AikidoBackgroundProcess:
+    """
+    Aikido's background process consists of 2 threads :
+    - (main) Listening thread which listens on an IPC socket for incoming data
+    - (spawned) reporting thread which collects IPC data and send it to a CloudConnectionManager
+    """
+
+    def __init__(self, address, key, session_id):
+        # Spawn re-imports this module and would otherwise create another session id.
+        set_agent_session_id(session_id)
+        try:
+            listener = con.Listener(address, authkey=None)
+        except OSError:
+            logger.debug("not listening, another thread is already listening.")
+            sys.exit(0)
+        self.queue = Queue()
+        self.connection_manager = None
+        # Start reporting thread :
+        Thread(target=self.reporting_thread, daemon=True).start()
+
+        logger.debug(
+            "Background process started successfully, with UDS File : %s", address
+        )
+
+        add_exit_handlers()
+
+        while True:
+            with listener.accept() as conn:
+                try:
+                    data = json.loads(conn.recv_bytes())
+                    logger.debug("Incoming data : %s", data)
+                    process_incoming_command(
+                        connection_manager=self.connection_manager,
+                        obj=data,
+                        conn=conn,
+                        queue=self.queue,
+                    )
+                except Exception as e:
+                    logger.error("Exception occurred in server thread : %s", e)
+                    logger.debug("Trace \n %s", traceback.format_exc())
+
+    def reporting_thread(self):
+        """Reporting thread"""
+        logger.debug("Started reporting thread")
+        event_scheduler = sched.scheduler(
+            time.monotonic, time.sleep
+        )  # Create an event scheduler
+        self.send_to_connection_manager(event_scheduler)
+
+        api = ReportingApiHTTP(reporting_url=get_api_url())
+        # We need to pass along the scheduler so that the heartbeat also gets sent
+        self.connection_manager = CloudConnectionManager(
+            block=check_env_for_blocking(),
+            api=api,
+            token=get_token_from_env(),
+            serverless=False,
+        )
+        time.sleep(2)  # Sleep 2 seconds to make sure modules get reported
+        self.connection_manager.start(event_scheduler)
+        event_scheduler.run()
+
+    def send_to_connection_manager(self, event_scheduler):
+        """
+        Reports the found data to an Aikido server
+        """
+        # Add back to event scheduler in EMPTY_QUEUE_INTERVAL secs :
+        event_scheduler.enter(
+            EMPTY_QUEUE_INTERVAL, 1, self.send_to_connection_manager, (event_scheduler,)
+        )
+        while not self.queue.empty():
+            self.connection_manager.report_api_event(self.queue.get())
+
+
+def add_exit_handlers():
+    """
+    We add graceful exit handlers here since the process keeps hanging otherwise.
+    """
+
+    def exit_gracefully(sig, frame):
+        sys.exit(0)
+
+    current_platform = platform.system()
+
+    signal.signal(signal.SIGINT, exit_gracefully)
+    signal.signal(signal.SIGTERM, exit_gracefully)
+
+    if current_platform in ("Linux", "Darwin"):
+        signal.signal(signal.SIGQUIT, exit_gracefully)
+        signal.signal(signal.SIGHUP, exit_gracefully)

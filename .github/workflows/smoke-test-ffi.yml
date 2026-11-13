@@ -1,0 +1,83 @@
+name: 🔥 Smoke Tests for FFI
+on: [push]
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        # macos-26 is ARM-based
+        # macos-26-intel is x86-based
+        # ubuntu-24.04 (x86) is not included because the full test suite runs on it
+        os: [windows-latest, macos-26, macos-26-intel, ubuntu-22.04-arm]
+
+    # Allows all jobs to run even if one fails
+    continue-on-error: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: 3.15
+
+      - name: Display system info
+        run: |
+          python -c "import platform; print(f'Machine architecture: {platform.machine()}')"
+          python -c "import platform; print(f'OS: {platform.system()}')"
+
+      - name: Install MySQL
+        if: runner.os == 'macOS'
+        run: brew install mysql
+
+      - name: Install MySQL
+        if: runner.os == 'Linux'
+        run: sudo apt-get install libmysqlclient-dev
+
+      - name: Setup safe-chain (Unix)
+        if: runner.os != 'Windows'
+        run: curl -fsSL https://github.com/AikidoSec/safe-chain/releases/latest/download/install-safe-chain.sh | sh -s -- --ci
+      - name: Setup safe-chain (Windows)
+        if: runner.os == 'Windows'
+        run: iex "& { $(iwr 'https://github.com/AikidoSec/safe-chain/releases/latest/download/install-safe-chain.ps1' -UseBasicParsing) } -ci"
+
+      - name: Install dependencies
+        run: make install
+
+      - name: Run tests
+        run: poetry run pytest aikido_zen/vulnerabilities/sql_injection/init_test.py
+
+  smoke-test-musl:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-22.04-arm]
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download binaries
+        run: make binaries && cp -r .cache/binaries/* aikido_zen/libs
+
+      # pip runs inside the container, so safe-chain is set up there and not on the runner.
+      # build-base compiles pytricia, which has no prebuilt wheel.
+      - name: Run tests on python:${{ matrix.python-version }}-alpine
+        run: |
+          docker run --rm -v "$(pwd):/app" -w /app python:${{ matrix.python-version }}-alpine sh -eo pipefail -c "
+            apk add --no-cache build-base curl
+            curl -fsSL https://github.com/AikidoSec/safe-chain/releases/latest/download/install-safe-chain.sh | sh -s -- --ci
+            export PATH=\"\$HOME/.safe-chain/shims:\$HOME/.safe-chain/bin:\$PATH\"
+            pip install --root-user-action=ignore . pytest
+            python -m pytest aikido_zen/helpers/zen_internals_test.py
+          "

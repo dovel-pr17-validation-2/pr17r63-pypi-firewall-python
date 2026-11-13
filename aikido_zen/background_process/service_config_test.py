@@ -1,0 +1,439 @@
+import json
+
+import pytest
+from .service_config import ServiceConfig
+from aikido_zen.helpers.ip_matcher import IPMatcher
+
+
+def test_service_config_outbound_blocking_initialization():
+    """Test that ServiceConfig initializes outbound blocking fields correctly"""
+    config = ServiceConfig(
+        endpoints=[],
+        last_updated_at=0,
+        blocked_uids=set(),
+        bypassed_ips=[],
+        received_any_stats=False,
+    )
+
+    # Test initial values
+    assert hasattr(config, "block_new_outgoing_requests")
+    assert hasattr(config, "outbound_domains")
+    assert config.block_new_outgoing_requests is False
+    assert config.outbound_domains == {}
+
+
+def test_service_config_set_block_new_outgoing_requests():
+    """Test the set_block_new_outgoing_requests method"""
+    config = ServiceConfig(
+        endpoints=[],
+        last_updated_at=0,
+        blocked_uids=set(),
+        bypassed_ips=[],
+        received_any_stats=False,
+    )
+
+    # Test setting to True
+    config.set_block_new_outgoing_requests(True)
+    assert config.block_new_outgoing_requests is True
+
+    # Test setting to False
+    config.set_block_new_outgoing_requests(False)
+    assert config.block_new_outgoing_requests is False
+
+    # Test setting with non-boolean values
+    config.set_block_new_outgoing_requests(1)
+    assert config.block_new_outgoing_requests is True
+
+    config.set_block_new_outgoing_requests(0)
+    assert config.block_new_outgoing_requests is False
+
+    config.set_block_new_outgoing_requests("true")
+    assert config.block_new_outgoing_requests is True
+
+    config.set_block_new_outgoing_requests("")
+    assert config.block_new_outgoing_requests is False
+
+
+def test_service_config_update_domains():
+    """Test the update_outbound_domains method"""
+    config = ServiceConfig(
+        endpoints=[],
+        last_updated_at=0,
+        blocked_uids=set(),
+        bypassed_ips=[],
+        received_any_stats=False,
+    )
+
+    # Test initial state
+    assert config.outbound_domains == {}
+
+    # Test updating with domains
+    domains_data = [
+        {"hostname": "example.com", "mode": "block"},
+        {"hostname": "allowed.com", "mode": "allow"},
+        {"hostname": "test.com", "mode": "block"},
+    ]
+    config.update_outbound_domains(domains_data)
+    assert config.outbound_domains == {
+        "example.com": "block",
+        "allowed.com": "allow",
+        "test.com": "block",
+    }
+
+    # Test updating with empty list
+    config.update_outbound_domains([])
+    assert config.outbound_domains == {}
+
+    # Test updating with single domain
+    config.update_outbound_domains([{"hostname": "single.com", "mode": "allow"}])
+    assert config.outbound_domains == {"single.com": "allow"}
+
+
+def test_service_config_should_block_outgoing_request():
+    """Test the should_block_outgoing_request method"""
+    config = ServiceConfig(
+        endpoints=[],
+        last_updated_at=0,
+        blocked_uids=set(),
+        bypassed_ips=[],
+        received_any_stats=False,
+    )
+
+    # Test with block_new_outgoing_requests = False (default)
+    # Only block if mode is "block"
+    config.update_outbound_domains(
+        [
+            {"hostname": "blocked.com", "mode": "block"},
+            {"hostname": "allowed.com", "mode": "allow"},
+        ]
+    )
+
+    assert config.should_block_outgoing_request("blocked.com") is True
+    assert config.should_block_outgoing_request("allowed.com") is False
+    assert (
+        config.should_block_outgoing_request("unknown.com") is False
+    )  # Unknown = allowed
+
+    # Test with block_new_outgoing_requests = True
+    config.set_block_new_outgoing_requests(True)
+    # Only allow if mode is "allow", block everything else
+    assert config.should_block_outgoing_request("blocked.com") is True  # Still blocked
+    assert (
+        config.should_block_outgoing_request("allowed.com") is False
+    )  # Explicitly allowed
+    assert (
+        config.should_block_outgoing_request("unknown.com") is True
+    )  # Unknown = blocked
+
+    # Test edge cases
+    config.set_block_new_outgoing_requests(False)
+    config.update_outbound_domains([])  # No domains configured
+    assert (
+        config.should_block_outgoing_request("any.com") is False
+    )  # No blocking when no domains
+
+    config.set_block_new_outgoing_requests(True)
+    config.update_outbound_domains([])  # No domains configured
+    assert (
+        config.should_block_outgoing_request("any.com") is True
+    )  # Block all when block_new_outgoing_requests=True
+
+
+def test_service_config_initialization():
+    endpoints = [
+        {
+            "graphql": False,
+            "method": "POST",
+            "route": "/v1",
+            "rate_limiting": {
+                "enabled": True,
+                "max_requests": 10,
+                "window_size_in_ms": 1000,
+            },
+            "force_protection_off": False,
+        },
+        {
+            "graphql": True,
+            "method": "POST",
+            "route": "/v2",
+            "rate_limiting": {
+                "enabled": True,
+                "max_requests": 10,
+                "window_size_in_ms": 1000,
+            },
+            "force_protection_off": False,
+        },
+        {
+            "graphql": False,
+            "method": "POST",
+            "route": "/v3",
+            "rate_limiting": {
+                "enabled": True,
+                "max_requests": 10,
+                "window_size_in_ms": 1000,
+            },
+            "force_protection_off": False,
+        },
+        {
+            "graphql": False,
+            "method": "GET",
+            "route": "/admin",
+            "rate_limiting": {
+                "enabled": False,
+                "max_requests": 10,
+                "window_size_in_ms": 1000,
+            },
+            "allowedIPAddresses": ["1.2.3.4", "192.168.2.0/24"],
+            "force_protection_off": False,
+        },
+    ]
+    last_updated_at = "2023-10-01"
+    service_config = ServiceConfig(
+        endpoints,
+        last_updated_at,
+        ["0", "0", "1", "5"],
+        ["127.0.0.1", "123.1.2.0/24", "132.1.0.0/16"],
+        True,
+    )
+
+    # Check that non-GraphQL endpoints are correctly filtered
+    assert len(service_config.endpoints) == 3
+    assert service_config.endpoints[0]["route"] == "/v1"
+    assert service_config.endpoints[1]["route"] == "/v3"
+    assert service_config.endpoints[2]["route"] == "/admin"
+    assert service_config.last_updated_at == last_updated_at
+    assert isinstance(service_config.bypassed_ips, IPMatcher)
+    assert service_config.bypassed_ips.has("127.0.0.1")
+    assert service_config.bypassed_ips.has("123.1.2.2")
+    assert not service_config.bypassed_ips.has("1.1.1.1")
+    assert service_config.blocked_uids == set(["1", "0", "5"])
+
+    v1_endpoint = service_config.get_endpoints(
+        {
+            "method": "POST",
+            "route": "/v1",
+            "url": "/v1",
+        }
+    )[0]
+    assert v1_endpoint["route"] == "/v1"
+    assert not "allowedIPAddresses" in v1_endpoint
+
+    admin_endpoint = service_config.get_endpoints(
+        {
+            "method": "GET",
+            "route": "/admin",
+            "url": "/admin",
+        }
+    )[0]
+    assert admin_endpoint["route"] == "/admin"
+    assert isinstance(admin_endpoint["allowedIPAddresses"], IPMatcher)
+    assert admin_endpoint["allowedIPAddresses"].has("192.168.2.1")
+    assert admin_endpoint["allowedIPAddresses"].has("1.2.3.4")
+    assert not admin_endpoint["allowedIPAddresses"].has("192.168.0.1")
+
+
+# Sample data for testing
+sample_endpoints = [
+    {"url": "http://example.com/api/v1", "graphql": False, "context": "user"},
+    {"url": "http://example.com/api/v2", "graphql": True, "context": "admin"},
+    {"url": "http://example.com/api/v3", "graphql": False, "context": "guest"},
+]
+
+
+@pytest.fixture
+def service_config():
+    return ServiceConfig(
+        endpoints=sample_endpoints,
+        last_updated_at="2023-10-01T00:00:00Z",
+        blocked_uids=["user1", "user2"],
+        bypassed_ips=["192.168.1.1", "10.0.0.1"],
+        received_any_stats=True,
+    )
+
+
+def test_initialization(service_config):
+    assert len(service_config.endpoints) == 2  # Only non-graphql endpoints
+    assert service_config.last_updated_at == "2023-10-01T00:00:00Z"
+    assert isinstance(service_config.bypassed_ips, IPMatcher)
+    assert service_config.blocked_uids == {"user1", "user2"}
+
+
+def test_ip_blocking():
+    config = ServiceConfig(
+        endpoints=sample_endpoints,
+        last_updated_at="2023-10-01T00:00:00Z",
+        blocked_uids=["user1", "user2"],
+        bypassed_ips=["192.168.1.1", "10.0.0.0/16", "::1/128"],
+        received_any_stats=True,
+    )
+
+    assert config.is_bypassed_ip("192.168.1.1")
+    assert config.is_bypassed_ip("10.0.0.1")
+    assert config.is_bypassed_ip("10.0.1.2")
+    assert config.is_bypassed_ip("10.0.254.254")
+    assert config.is_bypassed_ip("::1")
+    assert not config.is_bypassed_ip("::2")
+    assert not config.is_bypassed_ip("1.1.1.1")
+    assert not config.is_bypassed_ip("10.1.0.0")
+    assert not config.is_bypassed_ip(None)
+    assert not config.is_bypassed_ip("")
+
+
+def test_service_config_with_empty_allowlist():
+    endpoints = [
+        {
+            "graphql": False,
+            "method": "GET",
+            "route": "/admin",
+            "rate_limiting": {
+                "enabled": False,
+                "max_requests": 10,
+                "window_size_in_ms": 1000,
+            },
+            "allowedIPAddresses": [],
+            "force_protection_off": False,
+        },
+    ]
+    last_updated_at = "2023-10-01"
+    service_config = ServiceConfig(
+        endpoints,
+        last_updated_at,
+        ["0", "0", "1", "5"],
+        ["127.0.0.1", "123.1.2.0/24", "132.1.0.0/16"],
+        True,
+    )
+
+    # Check that non-GraphQL endpoints are correctly filtered
+    assert len(service_config.endpoints) == 1
+    assert service_config.endpoints[0]["route"] == "/admin"
+    assert service_config.last_updated_at == last_updated_at
+    assert isinstance(service_config.bypassed_ips, IPMatcher)
+    assert service_config.bypassed_ips.has("127.0.0.1")
+    assert service_config.bypassed_ips.has("123.1.2.2")
+    assert not service_config.bypassed_ips.has("1.1.1.1")
+    assert service_config.blocked_uids == set(["1", "0", "5"])
+
+    admin_endpoint = service_config.get_endpoints(
+        {
+            "method": "GET",
+            "route": "/admin",
+            "url": "/admin",
+        }
+    )[0]
+    assert admin_endpoint["route"] == "/admin"
+    assert isinstance(admin_endpoint["allowedIPAddresses"], list)
+    assert len(admin_endpoint["allowedIPAddresses"]) == 0
+
+
+def test_service_config_enabled_features():
+    """Test the update_enabled_features and is_feature_enabled methods"""
+    config = ServiceConfig(
+        endpoints=[],
+        last_updated_at=0,
+        blocked_uids=set(),
+        bypassed_ips=[],
+        received_any_stats=False,
+    )
+
+    # Initially empty
+    assert config.is_feature_enabled("realtime_updates") is False
+
+    config.update_enabled_features(["realtime_updates"])
+    assert config.is_feature_enabled("realtime_updates") is True
+    assert config.is_feature_enabled("some_other_feature") is False
+
+    # Update replaces the set
+    config.update_enabled_features([])
+    assert config.is_feature_enabled("realtime_updates") is False
+
+
+def test_excluded_user_ids_from_rate_limiting():
+    config = ServiceConfig(
+        endpoints=[],
+        last_updated_at=0,
+        blocked_uids=set(),
+        bypassed_ips=[],
+        received_any_stats=False,
+    )
+
+    # Initially empty
+    assert config.is_user_excluded_from_rate_limiting("user1") is False
+
+    # Update with user IDs
+    config.update_excluded_user_ids_from_rate_limiting(["user1", "user2"])
+    assert config.is_user_excluded_from_rate_limiting("user1") is True
+    assert config.is_user_excluded_from_rate_limiting("user2") is True
+    assert config.is_user_excluded_from_rate_limiting("user3") is False
+
+    # Update replaces the set
+    config.update_excluded_user_ids_from_rate_limiting(["user3"])
+    assert config.is_user_excluded_from_rate_limiting("user1") is False
+    assert config.is_user_excluded_from_rate_limiting("user3") is True
+
+    # Empty list clears all
+    config.update_excluded_user_ids_from_rate_limiting([])
+    assert config.is_user_excluded_from_rate_limiting("user3") is False
+
+
+def full_config():
+    config = ServiceConfig(
+        endpoints=[
+            {
+                "method": "GET",
+                "route": "/admin",
+                "graphql": None,
+                "forceProtectionOff": False,
+                "allowedIPAddresses": ["1.2.3.4"],
+                "rateLimiting": {
+                    "enabled": True,
+                    "maxRequests": 10,
+                    "windowSizeInMS": 1000,
+                },
+            },
+            {
+                "method": "POST",
+                "route": "/graphql",
+                "graphql": {"type": "query", "name": "user"},
+            },
+        ],
+        last_updated_at=1700000000000,
+        blocked_uids={"blocked-user"},
+        bypassed_ips=["10.0.0.0/8"],
+        received_any_stats=True,
+    )
+    config.revision = 3
+    config.set_block_new_outgoing_requests(True)
+    config.update_outbound_domains([{"hostname": "api.example.com", "mode": "allow"}])
+    config.update_excluded_user_ids_from_rate_limiting(["excluded-user"])
+    config.update_enabled_features(["realtime_updates"])
+    return config
+
+
+def test_to_dict_includes_every_setting():
+    config = full_config()
+
+    assert set(config.to_dict()) == set(vars(config)) - {
+        "_endpoint_data",
+        "_bypassed_ip_data",
+    }
+
+
+def test_config_rebuilt_from_json_matches_the_original():
+    config = full_config()
+
+    copy = ServiceConfig.from_dict(json.loads(json.dumps(config.to_dict())))
+
+    assert copy.to_dict() == config.to_dict()
+    assert copy.is_bypassed_ip("10.1.2.3")
+    assert not copy.is_bypassed_ip("1.2.3.4")
+    assert copy.blocked_uids == {"blocked-user"}
+    assert copy.is_user_excluded_from_rate_limiting("excluded-user")
+    assert copy.is_feature_enabled("realtime_updates")
+    assert copy.should_block_outgoing_request("other.example.com")
+    assert not copy.should_block_outgoing_request("api.example.com")
+    [endpoint] = copy.get_endpoints(
+        {"method": "GET", "route": "/admin", "url": "http://localhost/admin"}
+    )
+    assert endpoint["allowedIPAddresses"].has("1.2.3.4")
+    assert not endpoint["allowedIPAddresses"].has("5.6.7.8")
+    assert endpoint["rateLimiting"]["maxRequests"] == 10

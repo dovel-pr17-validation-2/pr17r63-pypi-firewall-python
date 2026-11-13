@@ -1,0 +1,131 @@
+"""Exports request_handler function"""
+
+import aikido_zen.context as ctx
+from aikido_zen.api_discovery.get_api_info import get_api_info
+from aikido_zen.helpers.is_useful_route import is_useful_route
+from aikido_zen.helpers.logging import logger
+from aikido_zen.helpers.create_attack_wave_event import create_attack_wave_event
+from aikido_zen.thread.thread_cache import get_cache
+from .ip_allowed_to_access_route import ip_allowed_to_access_route
+from aikido_zen.background_process.ipc import IPCClient
+from aikido_zen.background_process.commands import check_firewall_lists, put_event
+from ...helpers.serialize_to_json import serialize_to_json
+from ...storage.attack_wave_detector_store import attack_wave_detector_store
+
+ANALYSIS_ON_FIRST_X_ROUTES = 20
+
+
+def request_handler(stage, status_code=0):
+    """This will check for rate limiting, Allowed IP's, useful routes, etc."""
+    try:
+        if stage == "init":
+            cache = get_cache()
+            context = ctx.get_current_context()
+            if context and cache and not cache.is_bypassed_ip(context.remote_address):
+                cache.stats.increment_total_hits()
+        if stage == "pre_response":
+            return pre_response()
+        if stage == "post_response":
+            return post_response(status_code)
+    except Exception as e:
+        logger.debug("Exception occurred in request_handler : %s", e)
+    return None
+
+
+def pre_response():
+    """
+    This is executed at the end of the middleware chain before a response is present
+    - Checks if the IP is allowed to access the route (route-specific)
+    - Checks if the IP is in an allowlist (if that exists)
+    - Checks if the IP is in a blocklist (if that exists)
+    - Checks if the user agent is blocked (if the regex exists)
+    """
+    context = ctx.get_current_context()
+    cache = get_cache()
+    if not context or not cache:
+        logger.debug("Request was not complete, not running any pre_response code")
+        return
+
+    # Bypassed IPs skip all allowlist and blocklist checks
+    if cache.is_bypassed_ip(context.remote_address):
+        return None
+
+    # Per endpoint IP Allowlist
+    matched_endpoints = cache.config.get_endpoints(context.get_route_metadata())
+    if not ip_allowed_to_access_route(
+        context.remote_address, context.get_route_metadata(), matched_endpoints
+    ):
+        message = "Your IP address is not allowed to access this resource."
+        if context.remote_address:
+            message += f" (Your IP: {context.remote_address})"
+        return message, 403
+
+    # Do a check on firewall lists, this happens in background because of the heavy data.
+    # For the timeout we notice the request during heavy loads usually takes 2ms - 2.5ms, we set timeout at 10ms.
+    # That way we have a very small timeout with very little risk of not blocking ips.
+    ipc = IPCClient.get()
+    check_fw_lists_res = ipc.send_message(
+        check_firewall_lists.generate(
+            ip=context.remote_address, user_agent=context.get_user_agent()
+        ),
+    )
+    if not check_fw_lists_res["success"] or not check_fw_lists_res["data"]["blocked"]:
+        return
+
+    block_type = check_fw_lists_res["data"]["type"]
+
+    if block_type == "allowlist":
+        message = "Your IP address is not allowed."
+        message += " (Your IP: " + context.remote_address + ")"
+        return message, 403
+    if block_type == "blocklist":
+        message = "Your IP address is blocked due to "
+        message += check_fw_lists_res["data"]["reason"]
+        message += " (Your IP: " + context.remote_address + ")"
+        return message, 403
+    if block_type == "bot-blocking":
+        msg = "You are not allowed to access this resource because you have been identified as a bot."
+        return msg, 403
+    return None
+
+
+def post_response(status_code):
+    """Checks if the current route is useful and performs attack wave detection"""
+    context = ctx.get_current_context()
+    if not context:
+        return
+    route_metadata = context.get_route_metadata()
+
+    cache = get_cache()
+    if not cache:
+        return
+
+    if cache.is_bypassed_ip(context.remote_address):
+        return
+
+    attack_wave = attack_wave_detector_store.is_attack_wave(context, status_code)
+    if attack_wave:
+        cache.stats.on_detected_attack_wave(blocked=False)
+
+        event = create_attack_wave_event(context)
+        logger.debug("Attack wave: %s", serialize_to_json(event)[:5000])
+
+        ipc = IPCClient.get()
+        if ipc and event:
+            ipc.send_message_async(put_event.generate(event))
+
+    # Check if the current route is useful for API discovery
+    is_curr_route_useful = is_useful_route(
+        status_code,
+        context.route,
+        context.method,
+    )
+    if is_curr_route_useful:
+        cache.routes.increment_route(route_metadata)
+
+        # api spec generation
+        route = cache.routes.get(route_metadata)
+        if route["hits"] <= ANALYSIS_ON_FIRST_X_ROUTES:
+            cache.routes.update_route_with_apispec(
+                route_metadata, get_api_info(context)
+            )

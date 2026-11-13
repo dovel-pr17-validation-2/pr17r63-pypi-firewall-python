@@ -1,0 +1,40 @@
+import contextvars
+import multiprocessing
+import threading
+
+from aikido_zen.context import get_current_context
+from aikido_zen.helpers.logging import logger
+from aikido_zen.thread import thread_cache
+from aikido_zen.thread.process_worker import aikido_process_worker_thread
+
+_load_worker_lock = threading.Lock()
+
+
+def load_worker():
+    """Start the cache synchronization thread on the first request in each process."""
+    if get_current_context() is None:
+        return  # don't start a worker if it's not related to a request.
+
+    thread_name = "aikido-process-worker-" + str(multiprocessing.current_process().pid)
+
+    with _load_worker_lock:
+        # Each worker process should have only one periodic synchronization thread.
+        if any(thread.name == thread_name for thread in threading.enumerate()):
+            return
+
+        # Run setup without a request context to prevent self-deadlock when hooks
+        # triggered by imports or error logging call load_worker() again.
+        contextvars.Context().run(_start_worker, thread_name)
+
+
+def _start_worker(thread_name):
+    # Try to load config for the first request instead of waiting for periodic sync.
+    if not thread_cache.is_config_loaded():
+        try:
+            thread_cache.renew()
+        except Exception as e:
+            logger.warning("An error occurred during data synchronization: %s", e)
+
+    thread = threading.Thread(target=aikido_process_worker_thread, name=thread_name)
+    thread.daemon = True
+    thread.start()

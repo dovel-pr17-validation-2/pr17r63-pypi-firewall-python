@@ -1,0 +1,56 @@
+name: 🧪 QA Tests
+permissions:
+  contents: read
+on:
+  push: {}
+  workflow_call: {}
+
+jobs:
+  qa-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout firewall-python
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: firewall-python
+          persist-credentials: false
+
+      - name: Checkout zen-demo-python
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Aikido-demo-apps/zen-demo-python
+          path: zen-demo-python
+          ref: main
+          submodules: true
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.15"
+      - name: Setup safe-chain
+        run: curl -fsSL https://github.com/AikidoSec/safe-chain/releases/latest/download/install-safe-chain.sh | sh -s -- --ci
+      - name: Install poetry
+        run: pip install poetry
+
+      - name: Build firewall-python dev package
+        run: |
+          cd firewall-python
+          make build
+
+          # Move the built wheel to zen-demo-python directory
+          # poetry build creates both .tar.gz and .whl, we only need the wheel
+          mv dist/*.whl ../zen-demo-python/
+
+      - name: Replace Dockerfile with QA version
+        run: |
+          cp firewall-python/.github/workflows/Dockerfile.qa zen-demo-python/Dockerfile
+
+      - name: Run Firewall QA Tests
+        uses: AikidoSec/firewall-tester-action@3d448c6929e168148cf74c3d998d1dd5950d40ee # v1.1.1
+        with:
+          dockerfile_path: ./zen-demo-python/Dockerfile
+          app_port: 8080
+          config_propagation_delay: 15
+          skip_tests: test-path-traversal,test-outbound-domain-blocking,test-wave-attack

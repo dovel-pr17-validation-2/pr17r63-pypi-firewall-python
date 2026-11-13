@@ -1,0 +1,164 @@
+![Aikido Zen for Python 3](https://raw.githubusercontent.com/AikidoSec/firewall-python/main/docs/banner.svg)
+
+# Zen, in-app firewall for Python 3  | by Aikido
+[![Codecov](https://img.shields.io/codecov/c/github/AikidoSec/firewall-python?style=flat-square&token=AJK9LU35GY)](https://app.codecov.io/gh/aikidosec/firewall-python) 
+[![PyPI Package](https://img.shields.io/pypi/v/aikido_zen?style=flat-square)](https://pypi.org/project/aikido_zen/)
+![Code Style : Black](https://img.shields.io/badge/code%20style-black-black?style=flat-square)
+[![Unit tests](https://github.com/AikidoSec/firewall-python/actions/workflows/unit-test.yml/badge.svg)](https://github.com/AikidoSec/firewall-python/actions/workflows/unit-test.yml) 
+[![End to end tests](https://github.com/AikidoSec/firewall-python/actions/workflows/end2end.yml/badge.svg)](https://github.com/AikidoSec/firewall-python/actions/workflows/end2end.yml)
+
+Zen, your in-app firewall for peace of mind– at runtime.
+
+Zen is an embedded Web Application Firewall that autonomously protects your Python apps against common and critical attacks.
+
+Zen protects your Python apps by preventing user input containing dangerous strings, which allow SQL injections. It runs on the same server as your Python app for simple [installation](https://pypi.org/project/aikido_zen/#installation) and zero maintenance.
+
+## Features
+
+Zen will autonomously protect your Python applications from the inside against:
+
+* 🛡️ [NoSQL injection attacks](https://www.aikido.dev/blog/web-application-security-vulnerabilities)
+* 🛡️ [SQL injection attacks](https://www.aikido.dev/blog/the-state-of-sql-injections)
+* 🛡️ [Command injection attacks](https://www.aikido.dev/blog/command-injection-in-2024-unpacked)
+* 🛡️ [Path traversal attacks](https://www.aikido.dev/blog/path-traversal-in-2024-the-year-unpacked)
+* 🛡️ [Server-side request forgery (SSRF)](./docs/ssrf.md)
+* 🛡️ [Attack wave detection](https://help.aikido.dev/zen-firewall/zen-features/attack-wave-protection)
+
+Zen operates autonomously on the same server as your Python app to:
+
+* ✅ Secure your app like a classic web application firewall (WAF), but with none of the infrastructure or cost.
+
+## Supported libraries and frameworks
+
+Zen for Python 3 is compatible with:
+
+### WSGI
+* ✅ [Django](docs/django.md)
+* ✅ [Flask](docs/flask.md) >=2.2.4 (tested: 2.2.4, 2.3.3, 3.0.0, 3.1.0, 3.1.3)
+#### WSGI Servers
+* ✅ [Gunicorn](docs/gunicorn.md)
+* ✅ [uWSGI](docs/uwsgi.md)
+
+### ASGI
+* ✅ [Django](docs/django.md)
+* ✅ [Quart](docs/quart.md)
+* ✅ [Starlette](docs/starlette.md) ^0.16
+* ✅ [FastAPI](docs/fastapi.md) ^0.70
+
+### Database drivers
+* ✅ [`mysqlclient`](https://pypi.org/project/mysqlclient/) ^1.5
+* ✅ [`PyMySQL`](https://pypi.org/project/PyMySQL/) ^0.9
+* ✅ [`pymongo`](https://pypi.org/project/pymongo/) ^3.10
+* ✅ [`psycopg2`](https://pypi.org/project/psycopg2) ^2.9.2
+* ✅ [`psycopg`](https://pypi.org/project/psycopg) ^3.1
+* ✅ [`asyncpg`](https://pypi.org/project/asyncpg) ^0.27
+* ✅ [`motor`](https://pypi.org/project/motor/) (See `pymongo` version)
+* ✅ [`clickhouse-driver`](https://pypi.org/project/clickhouse-driver)
+* ✅ [`sqlite3`](https://docs.python.org/3/library/sqlite3.html)
+
+### AI SDKs
+Zen instruments the following AI SDKs to track which models are used and how many tokens are consumed, allowing you to monitor your AI usage and costs:
+* ✅ [`openai`](https://pypi.org/project/openai) ^1.0
+* ✅ [`anthropic`](https://pypi.org/project/anthropic/)
+* ✅ [`mistralai`](https://pypi.org/project/mistralai) ^1.0.0
+* ✅ [`boto3`](https://pypi.org/project/boto3) (AWS Bedrock)
+* ✅ [`groq`](https://pypi.org/project/groq)
+
+Zen is compatible with Python 3.8-3.15 and can run on Linux, Mac OS X, and Windows.
+
+## Installation
+
+We recommend testing Zen locally or on staging before deploying to production.
+
+```sh
+pip install aikido_zen
+# or
+poetry add aikido_zen
+# or
+uv add aikido_zen
+```
+
+For framework-specific instructions, check out our docs:
+
+- [Django](docs/django.md)
+- [Flask](docs/flask.md)
+- [Gunicorn](docs/gunicorn.md)
+- [Quart](docs/quart.md)
+- [Starlette](docs/starlette.md)
+- [FastAPI](docs/fastapi.md)
+
+## Guides
+
+- [Troubleshooting](docs/troubleshooting.md) — common issues and how to debug Zen
+- [Set the current user](docs/user.md) — identify users for rate limiting, blocking, and attack reports
+- [Track custom events](docs/track.md) — trigger events that Playbooks can act on
+- [Proxy / IP headers](docs/proxy.md) — configure client IP detection behind load balancers
+- [Logging](docs/logging.md) — enable debug logging
+- [Background process](docs/background_process.md) — how Zen's background process communicates over IPC
+
+## Reporting to your Aikido Security dashboard
+
+> Aikido is your no nonsense application security platform. One central system that scans your source code & cloud, shows you what vulnerabilities matter, and how to fix them - fast. So you can get back to building.
+
+Zen is a new product by Aikido. Built for developers to level up their security. While Aikido scans, get Zen for always-on protection. 
+
+You can use some of Zen’s features without Aikido, of course. Peace of mind is just a few lines of code away.
+
+But you will get the most value by reporting your data to Aikido.
+
+You will need an Aikido account and a token to report events to Aikido. If you don't have an account, you can [sign up for free](https://app.aikido.dev/login).
+
+Here's how:
+* [Log in to your Aikido account](https://app.aikido.dev/login).
+* Go to [Zen](https://app.aikido.dev/runtime/services).
+* Go to apps.
+* Click on **Add app**.
+* Choose a name for your app.
+* Click **Generate token**.
+* Copy the token.
+* Set the token as an environment variable, `AIKIDO_TOKEN`
+
+## Running in production (blocking) mode
+
+By default, Zen will only detect and report attacks to Aikido.
+
+To block requests, set the `AIKIDO_BLOCK` environment variable to `true`.
+
+See [Reporting to Aikido](#reporting-to-your-aikido-security-dashboard) to learn how to send events to Aikido.
+
+## Additional configuration
+
+[Configure Zen using environment variables for authentication, mode settings, debugging, and more.](https://help.aikido.dev/doc/configuration-via-env-vars/docrSItUkeR9)
+
+## License
+
+This program is offered under a commercial and under the AGPL license.
+You can be released from the requirements of the AGPL license by purchasing
+a commercial license. Buying such a license is mandatory as soon as you
+develop commercial activities involving the Zen software without
+disclosing the source code of your own applications.
+
+For more information, please contact Aikido Security at this
+address: support@aikido.dev or create an account at https://app.aikido.dev.
+
+## Benchmarks
+
+We run a benchmark on every commit to ensure Zen has a minimal impact on your application's performance.
+
+See [benchmarks](benchmarks/)
+
+## Bug bounty program
+
+Our bug bounty program is public and can be found by all registered Intigriti users [here](https://app.intigriti.com/researcher/programs/aikido/aikidoruntime)
+
+## Contributing
+
+See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for more information.
+
+## Code of Conduct
+
+See [CODE_OF_CONDUCT.md](.github/CODE_OF_CONDUCT.md) for more information.
+
+## Security
+
+See [SECURITY.md](.github/SECURITY.md) for more information.

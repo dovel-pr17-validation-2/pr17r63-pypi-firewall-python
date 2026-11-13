@@ -1,0 +1,93 @@
+name: 🕵️ End to end tests
+on: [pull_request]
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install poetry
+        run: pip install poetry
+      - name: Build
+        run: make build
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pkg-build
+          path: ./
+
+  end2end-test:
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 15
+    needs: build
+    strategy:
+      matrix:
+        app:
+          - { name: django-asgi-uvicorn, testfile: end2end/django_asgi_uvicorn_test.py }
+          - { name: django-mysql, testfile: end2end/django_mysql_test.py }
+          - { name: django-mysql-gunicorn, testfile: end2end/django_mysql_gunicorn_test.py }
+          - { name: django-postgres-gunicorn, testfile: end2end/django_postgres_gunicorn_test.py }
+          - { name: flask-mongo, testfile: end2end/flask_mongo_test.py }
+          - { name: flask-mysql, testfile: end2end/flask_mysql_test.py }
+          - { name: flask-mysql-uwsgi, testfile: end2end/flask_mysql_uwsgi_test.py }
+          - { name: flask-postgres, testfile: end2end/flask_postgres_test.py }
+          - { name: flask-postgres-xml, testfile: end2end/flask_postgres_xml_test.py }
+          - { name: flask-postgres-xml, testfile: end2end/flask_postgres_xml_lxml_test.py }
+          - { name: quart-postgres-uvicorn, testfile: end2end/quart_postgres_uvicorn_test.py }
+          - { name: starlette-postgres-uvicorn, testfile: end2end/starlette_postgres_uvicorn_test.py }
+          - { name: fastapi-postgres-uvicorn, testfile: end2end/fastapi_postgres_uvicorn_test.py }
+          - { name: fastapi-postgres-uvicorn-latest, testfile: end2end/fastapi_postgres_uvicorn_latest_test.py }
+          - { name: fastapi-postgres-uvicorn-old, testfile: end2end/fastapi_postgres_uvicorn_old_test.py }
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+        include:
+          - app: { name: flask-mysql, testfile: end2end/flask_mysql_test.py, lazy-imports: all }
+            python-version: "3.15"
+          - app: { name: django-mysql-gunicorn, testfile: end2end/django_mysql_gunicorn_test.py, lazy-imports: all }
+            python-version: "3.15"
+          - app: { name: starlette-postgres-uvicorn, testfile: end2end/starlette_postgres_uvicorn_test.py, lazy-imports: all }
+            python-version: "3.15"
+    steps:
+      - name: Install packages
+        run: sudo apt update && sudo apt install python3-dev libmysqlclient-dev
+      - name: Download artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pkg-build
+
+      - name: Start databases
+        working-directory: ./sample-apps/databases
+        run: docker compose up --build -d
+      - name: Build and start aikido mock server
+        run: |
+            cd end2end/server && docker build -t mock_core .
+            docker run --name mock_core -d -p 5000:5000 mock_core
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Setup safe-chain
+        run: curl -fsSL https://github.com/AikidoSec/safe-chain/releases/latest/download/install-safe-chain.sh | sh -s -- --ci
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          make install
+
+      - name: Start application
+        working-directory: ./sample-apps/${{ matrix.app.name }}
+        env:
+          PYTHON_LAZY_IMPORTS: ${{ matrix.app.lazy-imports || 'normal' }}
+        run: |
+          nohup make runZenDisabled &
+          sleep 20
+          nohup make run > output.log &
+          tail -f output.log &
+          sleep 20
+      - name: Run end2end tests for application
+        run: tail -f  ./sample-apps/${{ matrix.app.name }}/output.log & poetry run pytest ./${{ matrix.app.testfile }}

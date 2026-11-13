@@ -1,0 +1,265 @@
+import pytest
+from unittest.mock import MagicMock, patch
+from . import run_vulnerability_scan
+from aikido_zen.context import current_context, Context
+from aikido_zen.errors import AikidoSQLInjection
+from aikido_zen.thread.thread_cache import get_cache
+from aikido_zen.helpers.ip_matcher import IPMatcher
+
+
+@pytest.fixture(autouse=True)
+def run_around_tests():
+    get_cache().reset()
+    yield
+    # Make sure to reset context and cache after every test so it does not
+    # interfere with other tests
+    current_context.set(None)
+    get_cache().reset()
+
+
+@pytest.fixture
+def mock_ipc():
+    """Fixture to mock the get_ipc function."""
+    with patch("aikido_zen.background_process.ipc.IPCClient.get") as mock:
+        yield mock
+
+
+@pytest.fixture
+def get_context():
+    wsgi_request = {
+        "REQUEST_METHOD": "GET",
+        "HTTP_HEADER_1": "header 1 value",
+        "HTTP_HEADER_2": "Header 2 value",
+        "RANDOM_VALUE": "Random value",
+        "HTTP_COOKIE": "sessionId=abc123xyz456;",
+        "wsgi.url_scheme": "http",
+        "HTTP_HOST": "localhost:8080",
+        "PATH_INFO": "/hello",
+        "QUERY_STRING": "user=JohnDoe&age=30&age=35",
+        "CONTENT_TYPE": "application/json",
+        "REMOTE_ADDR": "198.51.100.23",
+    }
+    context = Context(
+        req=wsgi_request,
+        body={"test_input_sql": "doggoss2', TRUE"},
+        source="flask",
+    )
+    context.route_params = {"test_input2": "cattss2', TRUE"}
+    return context
+
+
+def test_run_vulnerability_scan_no_context(caplog):
+    current_context.set(None)
+    get_cache().cache = 1
+    run_vulnerability_scan(kind="test", op="test", args=tuple())
+    assert len(caplog.text) == 0
+
+
+def test_run_vulnerability_scan_no_context_no_lifecycle(caplog):
+    current_context.set(None)
+    get_cache().cache = None
+    run_vulnerability_scan(kind="test", op="test", args=tuple())
+    assert len(caplog.text) == 0
+
+
+def test_run_vulnerability_scan_context_no_lifecycle(caplog):
+    with pytest.raises(Exception):
+        current_context.set(1)
+        get_cache().cache = None
+        run_vulnerability_scan(kind="test", op="test", args=tuple())
+
+
+def test_lifecycle_cache_ok(caplog, get_context):
+    get_context.set_as_current_context()
+    run_vulnerability_scan(kind="test", op="test", args=tuple())
+    assert "Vulnerability type test currently has no scans implemented" in caplog.text
+
+
+def test_ssrf(caplog, get_context):
+    current_context.set(None)
+    run_vulnerability_scan(kind="ssrf", op="test", args=tuple())
+
+
+def test_lifecycle_cache_bypassed_ip(caplog, get_context):
+    get_context.set_as_current_context()
+    cache = get_cache()
+    cache.config.bypassed_ips = IPMatcher(["198.51.100.23"])
+    assert cache.is_bypassed_ip("198.51.100.23")
+    run_vulnerability_scan(kind="test", op="test", args=tuple())
+    assert len(caplog.text) == 0
+
+
+def test_sql_injection(caplog, get_context, monkeypatch):
+    get_context.set_as_current_context()
+    monkeypatch.setenv("AIKIDO_BLOCK", "1")
+
+    assert get_cache().stats.get_record()["requests"]["attacksDetected"]["total"] == 0
+    with pytest.raises(AikidoSQLInjection):
+        run_vulnerability_scan(
+            kind="sql_injection",
+            op="test_op",
+            args=("INSERT * INTO VALUES ('doggoss2', TRUE);", "mysql"),
+        )
+    assert get_cache().stats.get_record()["requests"]["attacksDetected"]["total"] == 1
+    assert get_cache().stats.get_record()["requests"]["attacksDetected"]["blocked"] == 1
+
+
+def test_sql_injection_without_a_client_ip(get_context, monkeypatch):
+    get_context.remote_address = None
+    get_context.set_as_current_context()
+    get_cache().config.bypassed_ips = IPMatcher(["198.51.100.23"])
+    monkeypatch.setenv("AIKIDO_BLOCK", "1")
+
+    assert get_cache().stats.get_record()["requests"]["attacksDetected"]["total"] == 0
+    with pytest.raises(AikidoSQLInjection):
+        run_vulnerability_scan(
+            kind="sql_injection",
+            op="test_op",
+            args=("INSERT * INTO VALUES ('doggoss2', TRUE);", "mysql"),
+        )
+    assert get_cache().stats.get_record()["requests"]["attacksDetected"]["total"] == 1
+    assert get_cache().stats.get_record()["requests"]["attacksDetected"]["blocked"] == 1
+
+
+def test_sql_injection_but_blocking_off(caplog, get_context, monkeypatch):
+    get_context.set_as_current_context()
+    monkeypatch.setenv("AIKIDO_BLOCK", "0")
+
+    assert get_cache().stats.get_record()["requests"]["attacksDetected"]["total"] == 0
+    run_vulnerability_scan(
+        kind="sql_injection",
+        op="test_op",
+        args=("INSERT * INTO VALUES ('doggoss2', TRUE);", "mysql"),
+    )
+    assert get_cache().stats.get_record()["requests"]["attacksDetected"]["total"] == 1
+    assert get_cache().stats.get_record()["requests"]["attacksDetected"]["blocked"] == 0
+
+
+def test_sql_injection_with_invalid_wildcard_route(caplog, get_context, monkeypatch):
+    get_context.set_as_current_context()
+    monkeypatch.setenv("AIKIDO_BLOCK", "1")
+    get_cache().config.set_endpoints(
+        [{"method": "GET", "route": "/api/[/*", "forceProtectionOff": False}]
+    )
+    with pytest.raises(AikidoSQLInjection):
+        run_vulnerability_scan(
+            kind="sql_injection",
+            op="test_op",
+            args=("INSERT * INTO VALUES ('doggoss2', TRUE);", "mysql"),
+        )
+
+
+def test_sql_injection_with_route_params(caplog, get_context, monkeypatch):
+    get_context.set_as_current_context()
+    monkeypatch.setenv("AIKIDO_BLOCK", "1")
+    with pytest.raises(AikidoSQLInjection):
+        run_vulnerability_scan(
+            kind="sql_injection",
+            op="test_op",
+            args=("INSERT * INTO VALUES ('cattss2', TRUE);", "mysql"),
+        )
+
+
+def test_sql_injection_with_ipc(caplog, get_context, monkeypatch):
+    get_cache().config.last_updated_at = 1
+    get_context.set_as_current_context()
+    monkeypatch.setenv("AIKIDO_BLOCK", "1")
+    with patch("aikido_zen.background_process.ipc.IPCClient.get") as mock_get_ipc:
+        # Create a mock ipc object
+        mock_ipc = MagicMock()
+        mock_ipc.send_message.return_value = {"success": True, "data": True}
+        mock_get_ipc.return_value = mock_ipc  # Set the return value of get_ipc
+        with pytest.raises(AikidoSQLInjection):
+            run_vulnerability_scan(
+                kind="sql_injection",
+                op="test_op",
+                args=("INSERT * INTO VALUES ('doggoss2', TRUE);", "mysql"),
+            )
+        mock_ipc.send_message_async.assert_called_once()
+        (message,) = mock_ipc.send_message_async.call_args.args
+        assert message.identifier == "PUT_EVENT"
+        assert message.request["request"] == {
+            "ipAddress": "198.51.100.23",
+            "method": "GET",
+            "route": "/hello",
+            "source": "flask",
+            "url": "http://localhost:8080/hello",
+            "userAgent": None,
+        }
+        del message.request["attack"]["stack"]  # Hard to test
+        assert message.request["attack"] == {
+            "blocked": True,
+            "kind": "sql_injection",
+            "metadata": {
+                "dialect": "mysql",
+                "sql": "INSERT * INTO VALUES ('doggoss2', TRUE);",
+            },
+            "operation": "test_op",
+            "pathToPayload": ".test_input_sql",
+            "payload": '"doggoss2\', TRUE"',
+            "source": "body",
+            "user": None,
+        }
+
+
+def test_ssrf_vulnerability_scan_no_port(get_context):
+    get_context.set_as_current_context()
+
+    dns_results = MagicMock()
+    hostname = "example.com"
+    port = 0  # Port is zero, should not add to hostnames
+
+    assert get_cache().stats.get_record()["requests"]["attacksDetected"]["total"] == 0
+    run_vulnerability_scan(kind="ssrf", op="test", args=(dns_results, hostname, port))
+    assert get_cache().stats.get_record()["requests"]["attacksDetected"]["total"] == 0
+
+    assert get_cache().hostnames.as_array() == []
+
+
+def test_ssrf_vulnerability_scan_bypassed_ip(get_context):
+    get_context.set_as_current_context()
+    get_cache().config.bypassed_ips = IPMatcher(["198.51.100.23"])
+
+    dns_results = MagicMock()
+    hostname = "example.com"
+    port = 80
+
+    assert get_cache().stats.get_record()["requests"]["attacksDetected"]["total"] == 0
+    run_vulnerability_scan(kind="ssrf", op="test", args=(dns_results, hostname, port))
+    assert get_cache().stats.get_record()["requests"]["attacksDetected"]["total"] == 0
+
+    # Verify that hostnames.add was not called due to bypassed IP
+    assert get_cache().hostnames.as_array() == []
+
+
+def test_ssrf_vulnerability_scan_protection_gets_forced_off(get_context):
+    get_context.set_as_current_context()
+    get_cache().config.bypassed_ips = IPMatcher(["198.51.100.23"])
+
+    dns_results = MagicMock()
+    hostname = "example.com"
+    port = 80
+    assert get_context.protection_forced_off is None
+    run_vulnerability_scan(kind="ssrf", op="test", args=(dns_results, hostname, port))
+    assert get_context.protection_forced_off is False
+
+
+def test_sql_injection_with_protection_forced_off(caplog, get_context, monkeypatch):
+    get_context.set_as_current_context()
+    monkeypatch.setenv("AIKIDO_BLOCK", "1")
+    with patch("aikido_zen.background_process.ipc.IPCClient.get") as mock_get_ipc:
+        # Create a mock ipc object
+        mock_ipc = MagicMock()
+        mock_get_ipc.return_value = mock_ipc  # Set the return value of get_ipc
+        with pytest.raises(AikidoSQLInjection):
+            run_vulnerability_scan(
+                kind="sql_injection",
+                op="test_op",
+                args=("INSERT * INTO VALUES ('doggoss2', TRUE);", "mysql"),
+            )
+        get_context.set_force_protection_off(True)
+        run_vulnerability_scan(
+            kind="sql_injection",
+            op="test_op",
+            args=("INSERT * INTO VALUES ('doggoss2', TRUE);", "mysql"),
+        )

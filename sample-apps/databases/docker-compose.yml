@@ -1,0 +1,78 @@
+services:
+  mysql_database:
+    image: mysql
+    container_name: sample_mysql_db
+    restart: always
+    volumes:
+      - mysql_db_data:/var/lib/mysql
+      - ./mysql_init.sql:/data/application/init.sql
+    environment:
+      MYSQL_DATABASE: 'db'
+      MYSQL_USER: 'user'
+      MYSQL_PASSWORD: 'password'
+      MYSQL_ROOT_PASSWORD: 'password'
+    ports:
+      - "3306:3306"
+    command: --init-file /data/application/init.sql
+
+  postgres_database:
+    image: postgres:14-alpine
+    container_name: sample_postgres_db
+    restart: always
+    volumes:
+      - postgres_db_data:/var/lib/postgresql/data
+      - ./postgres_init.sql:/docker-entrypoint-initdb.d/init.sql
+
+    environment:
+      POSTGRES_DB: 'db'
+      POSTGRES_USER: 'user'
+      POSTGRES_PASSWORD: 'password'
+    ports:
+      - "5432:5432"
+
+  mongo_database:
+    image: mongo:latest
+    container_name: sample_mongo_db
+    restart: always
+    environment:
+        MONGO_INITDB_ROOT_USERNAME: admin
+        MONGO_INITDB_ROOT_PASSWORD: password
+        MONGO_INITDB_DATABASE: my_database
+    volumes:
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+      - mongo_db_data:/data/db
+    ports:
+      - "27017:27017"
+  mssql_database:
+    build: ./mssql_database
+    container_name: sample_mssql_db
+    restart: always
+    environment:
+      SA_PASSWORD: 'Strong!Passw0rd'
+      ACCEPT_EULA: 'Y'
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql_db_data:/var/opt/mssql
+  clickhouse_database:
+    image: yandex/clickhouse-server
+    container_name: sample_clickhouse_db
+    restart: always
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse_init.sql:/docker-entrypoint-initdb.d/clickhouse_init.sql
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_USER: 'default'
+      CLICKHOUSE_PASSWORD: ''
+      CLICKHOUSE_DB: 'db'
+
+
+volumes:
+  mysql_db_data:
+  postgres_db_data:
+  mongo_db_data:
+  mssql_db_data:
+  clickhouse_data:
